@@ -13,14 +13,11 @@ import numpy as np
 
 MODO = "completo"          # "teste" | "baselines" | "completo"
 
-
-# --- Caminhos locais no Pop!_OS ---
-DADOS = r"/home/alex_ventura/Projeto IA025/DATASET_UNET/DATASET_UNET/DATASET_UNET/DATASET_UNET"
-DESTINO = r"/home/alex_ventura/Projeto IA025/TREINO_UNET/TREINO_UNET"
+# Caminhos relativos automáticos 
+RAIZ = os.path.dirname(os.path.abspath(__file__))
+DADOS = os.path.join(RAIZ, "..", "DATASET_UNET")
+DESTINO = os.path.join(RAIZ, "..", "resultados_exp1_unet")
 os.makedirs(DESTINO, exist_ok=True)
-
-
-
 
 SEMENTE = 20261022
 
@@ -32,7 +29,7 @@ FRAC_REGIOES_RETIDAS = 0.25
 # --- treino ---
 ARQUITETURA = "unet_pequena"        # U-Net nativa em PyTorch
 CANAIS_BASE = 32
-EPOCAS = 80 # reduzir para 80 e pois esteva demorando muito, mas pelo que notei a melhor época foi antes de 80
+EPOCAS = 80                         # fiz o treinamento com 80 épocas para agilizar pois estava demorando muito, obtendo o melhor resultado antes das 80
 PACIENCIA = 15
 LOTE = 16
 LR = 3e-4
@@ -387,7 +384,6 @@ def treinar(exp, arquivos_por_conjunto, canais, usar, destino):
 
     cam = os.path.join(destino, "%s.pth" % exp)
 
-    # CHECKPOINT CHECK: Se o modelo já foi treinado e salvo, pula o treino!
     if os.path.exists(cam):
         print(f"  [CHECKPOINT] Modelo '{exp}' já existe em {cam}. Pulando treinamento e carregando pesos salvos.")
         rede.load_state_dict(torch.load(cam, map_location=dev)["modelo"])
@@ -511,7 +507,6 @@ def ler_o_resultado(linhas):
     print("=" * 70)
     clim = iou("0_climatologia", "teste_ambos")
     comp = iou("C_completo", "teste_ambos")
-    terr = iou("A_so_terreno", "teste_ambos")
 
     if clim is not None and comp is not None:
         print("Climatologia %.4f  x  modelo completo %.4f" % (clim, comp))
@@ -594,7 +589,7 @@ def main():
             Xs, ys, vs, aq = cache[c]
             linhas.append(avaliar(f_prev(Xs, aq), ys, vs, t, nome, c, ""))
 
-    # ---- 2. Modelos de Ablação de Canais (Se o .pth já existir no Drive, ele pula o treino!)
+    # ---- 2. Modelos de Ablação de Canais
     for nome, usar in experimentos(canais):
         print("\n" + "=" * 70)
         print("MODELO %s" % nome)
@@ -635,25 +630,24 @@ def main():
         m = metricas(tp, fp, fn, tn)
         lo, hi = ic_iou(ps, ys, vs, t)
 
-        linhas.append({
+        # ADIÇÃO: Incluídas todas as chaves básicas de métrica para alinhar 
+        # com os campos esperados pelo `gravar()` e evitar erros no DictWriter.
+        m.update({
             "experimento": exp_nome,
             "conjunto": "teste_ambos",
             "limiar": t,
-            "iou": m["iou"],
+            "canais": "completo",
             "iou_ic95_lo": lo,
             "iou_ic95_hi": hi,
-            "f1": m["f1"],
-            "precisao": m["precisao"],
-            "recall": m["recall"],
-            "n_patches": len(ps),
-            "canais": "completo",
-            "frac_secos": frac_secos
+            "n_patches": len(ps)
         })
+        linhas.append(m)
 
     gravar(linhas, DESTINO)
     ler_o_resultado(linhas)
     print(f"\n[SUCESSO] Processo finalizado! Resultados salvos em: {os.path.join(DESTINO, 'resultados.csv')}")
     return 0
+
 
 if __name__ == "__main__":
     main()
