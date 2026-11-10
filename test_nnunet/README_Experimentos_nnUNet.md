@@ -806,9 +806,48 @@ Entretanto, o Recall caiu de **72,96% para 51,29%**, com aumento dos falsos nega
 6\. Não considerar o Dataset102_2 concluído antes de registrar o treinamento completo, checkpoint, validação e avaliação final.
 
 
+### 11. Avaliação de diferentes thresholds de probabilidade — Dataset102
+
+Com o objetivo de verificar se o ajuste do limiar de classificação poderia melhorar o desempenho do Dataset102 original (7 canais, Dice + Cross-Entropy), foi realizado um experimento utilizando diferentes thresholds de probabilidade para a classe inundação, sem necessidade de novo treinamento.
+
+Foram utilizadas as probabilidades geradas pelo modelo treinado (`checkpoint_best.pth`), avaliando os thresholds **0,3; 0,4; 0,5; 0,6 e 0,7**.
+
+Inicialmente, foram avaliados os **216 patches de validação** (121 positivos e 95 negativos). Posteriormente, os mesmos thresholds foram aplicados aos **216 patches de teste** (139 positivos e 77 negativos), desconsiderando os pixels com rótulo `2` (`ignore`).
+
+#### Resultados na validação
+
+| Threshold | Dice global | IoU global | Precision | Recall | FP | FN |
+|---|---:|---:|---:|---:|---:|---:|
+| 0,3 | 41,15% | 25,90% | 32,89% | 54,92% | 200.410 | 80.625 |
+| 0,4 | 41,29% | 26,02% | 33,32% | 54,26% | 194.228 | 81.803 |
+| 0,5 | 41,38% | 26,09% | 33,70% | 53,61% | 188.649 | 82.976 |
+| 0,6 | 41,48% | 26,17% | 34,10% | 52,93% | 182.985 | 84.184 |
+| **0,7** | **41,55%** | **26,22%** | **34,57%** | 52,07% | **176.313** | 85.728 |
+
+O threshold de **0,7 apresentou o maior Dice global na validação (41,55%)**, representando um aumento de 0,17 ponto percentual em relação ao threshold padrão de 0,5.
+
+#### Resultados no teste
+
+| Threshold | Dice global | IoU global | Precision | Recall | FP | FN |
+|---|---:|---:|---:|---:|---:|---:|
+| 0,3 | 58,83% | 41,67% | 48,44% | **74,90%** | 153.975 | **48.488** |
+| 0,4 | 58,95% | 41,79% | 49,02% | 73,93% | 148.503 | 50.360 |
+| **0,5** | 59,00% | 41,85% | 49,53% | 72,96% | 143.599 | 52.224 |
+| **0,6** | **59,03%** | **41,87%** | 50,04% | 71,94% | 138.712 | 54.193 |
+| 0,7 | 58,98% | 41,82% | **50,62%** | 70,63% | **133.052** | 56.733 |
+
+O threshold de **0,5 reproduziu exatamente os resultados originais do Dataset102**, confirmando a consistência da avaliação.
+
+#### Conclusão
+
+No conjunto de teste, o threshold de **0,6 apresentou o maior Dice global (59,03%)**, representando um aumento de apenas 0,03 ponto percentual em relação ao threshold padrão de 0,5 (59,00%).
+
+O aumento do threshold de 0,5 para 0,6 reduziu os falsos positivos de **143.599 para 138.712** e melhorou a Precision de **49,53% para 50,04%**. Entretanto, houve redução do Recall de **72,96% para 71,94%**, acompanhada do aumento dos falsos negativos de **52.224 para 54.193**.
+
+Dessa forma, **o ajuste do threshold não proporcionou uma melhoria significativa no desempenho do modelo no conjunto de teste**, sendo mantido o threshold padrão de **0,5** como referência para o Dataset102.
+
 
 **## 11. Referência**
-
 
 
 Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). \*\*nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation.\*\* *\*Nature Methods\**, 18(2), 203–211.
