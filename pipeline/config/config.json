@@ -1,0 +1,28 @@
+{
+  "model": "unet",
+  "epochs": 3,
+  "batch_size": 4,
+  "seed": 20261022,
+  "output_dir": "results",
+  "checkpoint_name": "last_model.pt",
+  "loss_name": "weighted_bce",
+  "loss_config": {
+    "pos_weight": 1.0
+  },
+  "oversample_positive_patches": true,
+  "positive_oversample_ratio": 0.7,
+  "min_positive_fraction": 1e-6,
+  "model_config": {
+    "in_channels": 10,
+    "base_channels": 64,
+    "depth": 4,
+    "padding": true,
+    "use_batch_norm": true,
+    "dropout": 0.1,
+    "activation": "relu",
+    "output_activation": "sigmoid",
+    "decoder_channels": [256, 128, 64, 32],
+    "alpha": 0.3,
+    "beta": 0.7
+  }
+}

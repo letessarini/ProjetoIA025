@@ -1,12 +1,12 @@
-*.pth
-# Ignorar dados pesados
+﻿# Dados pesados
 DATASET_UNET/
+DATASET_UNET.zip
 TREINO_UNET/
 
-# Ignorar pesos de modelos treinados em qualquer lugar
+# Pesos de modelos
 *.pth
 
-# Ignorar caches do Python e do sistema operacional
+# Caches Python e sistema
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store

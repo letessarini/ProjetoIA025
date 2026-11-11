@@ -20,14 +20,29 @@ import csv
 import json
 import glob
 import time
+from pathlib import Path
 
 import numpy as np
 
-MODO = "completo"          # "teste" | "baselines" | "completo"
+ROOT = Path(__file__).resolve().parent
+DATASET_CANDIDATES = [
+    ROOT / "DATASET_UNET" / "DATASET_UNET",
+    ROOT / "DATASET_UNET",
+    ROOT / "data" / "DATASET_UNET",
+]
 
-PASTA = r"C:\Users\m291018\OneDrive\05-Mateus Domingos\INMET"
-DADOS = os.path.join(PASTA, "DATASET_UNET")
-DESTINO = os.path.join(PASTA, "TREINO_UNET")
+DADOS = str(ROOT / "DATASET_UNET")
+for candidate in DATASET_CANDIDATES:
+    manifest = candidate / "manifest.json"
+    patches = candidate / "patches"
+    if manifest.exists() and patches.exists():
+        DADOS = str(candidate)
+        break
+
+PASTA = str(ROOT)
+DESTINO = str(ROOT / "TREINO_UNET")
+
+MODO = "completo"          # "teste" | "baselines" | "completo"
 
 SEMENTE = 20261022
 
@@ -243,6 +258,26 @@ def melhor_limiar(probs, alvos, validos, limiares=LIMIARES, criterio="iou"):
         if m > valor:
             melhor, valor = float(t), float(m)
     return melhor, valor
+
+
+def metricas_do_conjunto(probs, alvos, validos, limiares=LIMIARES, criterio="iou"):
+    """Retorna o melhor limiar e as metricas principais para um conjunto."""
+    best_t, _ = melhor_limiar(probs, alvos, validos, limiares=limiares, criterio=criterio)
+    tp = fp = fn = tn = 0
+    for p, a, v in zip(probs, alvos, validos):
+        c = contar(np.asarray(p) >= best_t, a, v)
+        tp += c[0]; fp += c[1]; fn += c[2]; tn += c[3]
+    m = metricas(tp, fp, fn, tn)
+    return {
+        "limiar": float(best_t),
+        "iou": float(m["iou"]),
+        "precisao": float(m["precisao"]),
+        "recall": float(m["recall"]),
+        "f1": float(m["f1"]),
+        "frac_prevista": float(m["frac_prevista"]),
+        "prevalencia": float(m["prevalencia"]),
+        "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
+    }
 
 
 # =============================================================================
@@ -523,8 +558,17 @@ def treinar(exp, arquivos_por_conjunto, canais, usar, destino):
             marca = "  <- salvo"
         else:
             espera += 1
-        print("    ep %3d/%d  treino %.4f  val %.4f  %4.1fs%s"
-              % (ep + 1, EPOCAS, p_tr, p_va, time.time() - t0, marca))
+
+        val_probs, val_alvos, val_validos = prever(rede, dev,
+                                                 arquivos_por_conjunto["validacao"],
+                                                 idx)
+        val_metricas = metricas_do_conjunto(val_probs, val_alvos, val_validos)
+
+        print("    ep %3d/%d  treino %.4f  val %.4f  iou %.4f  prec %.4f  rec %.4f  f1 %.4f  limiar %.2f%s"
+              % (ep + 1, EPOCAS, p_tr, p_va,
+                 val_metricas["iou"], val_metricas["precisao"],
+                 val_metricas["recall"], val_metricas["f1"],
+                 val_metricas["limiar"], marca))
         if espera >= PACIENCIA:
             print("    parada antecipada na epoca %d (melhor foi a %d)"
                   % (ep + 1, melhor_ep))
