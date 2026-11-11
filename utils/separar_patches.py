@@ -7,8 +7,16 @@ import csv
 # CONFIGURAÇÕES
 # ============================================
 
-PATCHES_DIR = Path("./patches")
-OUTPUT_DIR = Path("./patches_separados")
+ROOT = Path(__file__).resolve().parents[1]
+DATASET_DIR = ROOT / "DATASET_UNET" / "DATASET_UNET"
+if not DATASET_DIR.exists():
+    DATASET_DIR = ROOT / "DATASET_UNET"
+
+PATCHES_DIR = DATASET_DIR / "patches"
+if not PATCHES_DIR.exists():
+    PATCHES_DIR = ROOT / "patches"
+
+OUTPUT_DIR = ROOT / "patches_separados"
 
 DIR_COM = OUTPUT_DIR / "com_inundacao"
 DIR_SEM = OUTPUT_DIR / "sem_inundacao"

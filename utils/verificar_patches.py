@@ -1,9 +1,13 @@
-
 from pathlib import Path
 from collections import Counter
 import numpy as np
 
-PATCHES_DIR = Path("/home/leticia/ProjetoIA025/patches")
+ROOT = Path(__file__).resolve().parents[1]
+PATCHES_DIR = ROOT / "DATASET_UNET" / "DATASET_UNET" / "patches"
+if not PATCHES_DIR.exists():
+    PATCHES_DIR = ROOT / "DATASET_UNET" / "patches"
+if not PATCHES_DIR.exists():
+    PATCHES_DIR = ROOT / "patches"
 
 arquivos = sorted(PATCHES_DIR.rglob("*.npz"))
 

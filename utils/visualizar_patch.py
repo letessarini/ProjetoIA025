@@ -1,20 +1,18 @@
-
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ============================================
-# CONFIGURAÇÕES
-# ============================================
+ROOT = Path(__file__).resolve().parents[1]
+DATASET_DIR = ROOT / "DATASET_UNET" / "DATASET_UNET"
+if not DATASET_DIR.exists():
+    DATASET_DIR = ROOT / "DATASET_UNET"
 
-PATCH = Path(
-    "/home/leticia/ProjetoIA025/patches/"
-    "20130107_y0512_x0256.npz"
-)
+PATCHES_DIR = DATASET_DIR / "patches"
+if not PATCHES_DIR.exists():
+    PATCHES_DIR = ROOT / "patches"
 
-OUTPUT = Path(
-    "/home/leticia/ProjetoIA025/visualizacao_patch.png"
-)
+PATCH = sorted(PATCHES_DIR.rglob("*.npz"))[0]
+OUTPUT = ROOT / "visualizacao_patch.png"
 
 NOMES_CANAIS = [
     "Precipitação total",
