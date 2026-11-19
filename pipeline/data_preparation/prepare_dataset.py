@@ -11,10 +11,9 @@ from pipeline.data_preparation.dataset_loader import find_dataset_dir, list_patc
 
 @dataclass
 class PreprocessConfig:
-    """Configuration for patch-level preprocessing and augmentation."""
-    normalize: bool = True
-    fill_missing: bool = True
-    use_manifest_fill_values: bool = True
+    normalize: bool = False
+    fill_missing: bool = False
+    use_manifest_fill_values: bool = False
     normalize_per_channel: bool = True
     augmentation: bool = False
     rotation_degrees: Sequence[int] = (0, 90, 180, 270)
