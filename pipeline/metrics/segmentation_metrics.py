@@ -17,13 +17,20 @@ def count_pixels(pred, target, valid=None):
     return int(np.sum(p & a)), int(np.sum(p & ~a)), int(np.sum(~p & a)), int(np.sum(~p & ~a))
 
 
+
 def compute_metrics(tp: int, fp: int, fn: int, tn: int, eps: float = 1e-9) -> Dict[str, float]:
     precision = tp / (tp + fp + eps)
     recall = tp / (tp + fn + eps)
+
     n = tp + fp + fn + tn
+
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    f2 = 5 * precision * recall / (4 * precision + recall + eps)
+
     return {
         "iou": tp / (tp + fp + fn + eps),
-        "f1": 2 * precision * recall / (precision + recall + eps),
+        "f1": float(f1),
+        "f2": float(f2),
         "precision": float(precision),
         "recall": float(recall),
         "accuracy": (tp + tn) / (n + eps),
@@ -34,6 +41,7 @@ def compute_metrics(tp: int, fp: int, fn: int, tn: int, eps: float = 1e-9) -> Di
         "fn": int(fn),
         "tn": int(tn),
     }
+
 
 
 def compute_metrics_for_prediction(pred, target, valid=None, threshold: float = 0.5) -> Dict[str, float]:

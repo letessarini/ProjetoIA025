@@ -482,11 +482,11 @@ def _evaluate_threshold_sweep(model, loader, device, thresholds: Sequence[float]
             "metrics": _threshold_metrics(tp, fp, fn, tn),
         })
 
-    best = max(
-        threshold_metrics,
-        key=lambda item: item["metrics"]["f2"]
-    )
-    return threshold_metrics, best
+        best = max(
+            threshold_metrics,
+            key=lambda item: item["metrics"]["f2"]
+        )
+        return threshold_metrics, best
 
 
 class GenericTrainer:
@@ -607,7 +607,7 @@ class GenericTrainer:
                 f"val_precision={val_metrics['precision']:.4f} | "
                 f"val_recall={val_metrics['recall']:.4f} | "
                 f"val_f1={val_metrics['f1']:.4f} | "
-                f"val_f2={val_metrics['f2']:.4f} | "
+                f"val_f2={val_metrics.get('f2', 0.0):.4f} | "
                 f"best_threshold={best_threshold_metrics['threshold']:.2f} "
                 f"(f2={best_threshold_metrics['metrics']['f2']:.4f}, "
                 f"recall={best_threshold_metrics['metrics']['recall']:.4f}) | "
