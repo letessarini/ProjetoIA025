@@ -220,6 +220,7 @@ def build_unet(
     return SmallUNet()
 
 
+
 def build_unetpp(
     in_channels: int,
     base_channels: int = 32,
@@ -232,18 +233,116 @@ def build_unetpp(
     decoder_channels: Optional[list[int]] = None,
     **kwargs,
 ):
-    return build_unet(
-        in_channels=in_channels,
-        base_channels=base_channels,
-        depth=depth,
-        padding=padding,
-        use_batch_norm=use_batch_norm,
-        dropout=dropout,
-        activation=activation,
-        output_activation="identity",
-        decoder_channels=decoder_channels,
-        **kwargs,
-    )
+    if torch is None or nn is None:
+        raise ModuleNotFoundError("PyTorch is required to build U-Net++.")
+
+    if not padding:
+        raise ValueError("U-Net++ requires padding=True to preserve spatial dimensions.")
+
+    depth = max(2, int(depth))
+    base_channels = max(8, int(base_channels))
+
+    channels = [
+        base_channels * (2 ** i)
+        for i in range(depth + 1)
+    ]
+
+    class UNetPlusPlus(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+            self.depth = depth
+
+            self.encoders = nn.ModuleList()
+            self.pools = nn.ModuleList()
+
+            current_channels = in_channels
+
+            for i in range(depth):
+                self.encoders.append(
+                    _conv_block(
+                        current_channels,
+                        channels[i],
+                        padding=True,
+                        use_batch_norm=use_batch_norm,
+                        dropout=dropout,
+                        activation=activation,
+                    )
+                )
+
+                self.pools.append(nn.MaxPool2d(kernel_size=2))
+                current_channels = channels[i]
+
+            self.bottleneck = _conv_block(
+                channels[depth - 1],
+                channels[depth],
+                padding=True,
+                use_batch_norm=use_batch_norm,
+                dropout=dropout,
+                activation=activation,
+            )
+
+            self.nested_blocks = nn.ModuleDict()
+
+            for j in range(1, depth + 1):
+                for i in range(depth - j, -1, -1):
+                    input_channels = j * channels[i] + channels[i + 1]
+
+                    self.nested_blocks[f"{i}_{j}"] = _conv_block(
+                        input_channels,
+                        channels[i],
+                        padding=True,
+                        use_batch_norm=use_batch_norm,
+                        dropout=dropout,
+                        activation=activation,
+                    )
+
+            self.output = nn.Conv2d(
+                channels[0],
+                1,
+                kernel_size=1,
+            )
+
+        def forward(self, x):
+            nodes = {}
+
+            for i, (encoder, pool) in enumerate(
+                zip(self.encoders, self.pools)
+            ):
+                x = encoder(x)
+                nodes[(i, 0)] = x
+                x = pool(x)
+
+            nodes[(depth, 0)] = self.bottleneck(x)
+
+            for j in range(1, depth + 1):
+                for i in range(depth - j, -1, -1):
+                    lower = nodes[(i + 1, j - 1)]
+
+                    upsampled = nn.functional.interpolate(
+                        lower,
+                        size=nodes[(i, 0)].shape[2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+
+                    features = [
+                        nodes[(i, k)]
+                        for k in range(j)
+                    ]
+
+                    features.append(upsampled)
+
+                    concatenated = torch.cat(features, dim=1)
+
+                    nodes[(i, j)] = self.nested_blocks[
+                        f"{i}_{j}"
+                    ](concatenated)
+
+            return self.output(nodes[(0, depth)])
+
+    return UNetPlusPlus()
+
 
 
 SmallUNet = build_unet
