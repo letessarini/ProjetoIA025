@@ -72,12 +72,18 @@ class PositiveOversamplingDataset:
         self.positive_index = [self._is_positive_patch(p) for p in self.patches]
 
     @staticmethod
-    def _is_positive_patch(patch: Dict[str, Any], min_positive_fraction: float = 1e-6) -> bool:
-        y = np.asarray(patch.get("y", np.zeros((1, 1), dtype=np.float32)), dtype=np.float32)
-        valid = np.asarray(patch.get("valido", np.ones_like(y)), dtype=np.float32)
-        if y.size == 0:
+    def _is_positive_patch(patch, min_positive_fraction=1e-6):
+        y = np.asarray(patch.get("y", []), dtype=np.float32)
+        valid = np.asarray(
+            patch.get("valido", np.ones_like(y)),
+            dtype=np.float32
+        ) > 0.5
+
+        if y.size == 0 or valid.sum() == 0:
             return False
-        positive_fraction = float(((y > 0.5) & (valid > 0.5)).mean())
+
+        positive_fraction = ((y > 0.5) & valid).sum() / valid.sum()
+
         return bool(positive_fraction > max(0.0, min_positive_fraction))
 
     def __len__(self) -> int:
@@ -96,15 +102,20 @@ class PositiveOversamplingDataset:
 
         positive_count = sum(self.positive_index)
         negative_count = len(self.patches) - positive_count
-        if positive_count == 0:
+
+        if positive_count == 0 or negative_count == 0:
             return np.ones(len(self.patches), dtype=np.float32)
 
-        pos_weight = 1.0 / max(self.positive_ratio, 1e-6)
-        neg_weight = 1.0 / max(1.0 - self.positive_ratio, 1e-6)
-        out = []
-        for is_positive in self.positive_index:
-            out.append(pos_weight if is_positive else neg_weight)
-        return np.asarray(out, dtype=np.float32)
+        positive_weight = self.positive_ratio / positive_count
+        negative_weight = (1.0 - self.positive_ratio) / negative_count
+
+        return np.asarray(
+            [
+                positive_weight if is_positive else negative_weight
+                for is_positive in self.positive_index
+            ],
+            dtype=np.float32,
+        )
 
 
 class PatchDataset:
@@ -159,6 +170,21 @@ def build_loader(
             min_positive_fraction=min_positive_fraction,
         )
         weights = dataset.sampler_weights()
+        positive_mask = np.array(dataset.positive_index, dtype=bool)
+
+        print("\n--- DIAGNÓSTICO OVERSAMPLING ---")
+        print(f"Total de patches: {len(dataset)}")
+        print(f"Patches positivos: {positive_mask.sum()}")
+        print(f"Patches negativos: {(~positive_mask).sum()}")
+        print(f"Proporção positiva original: {positive_mask.mean():.4f}")
+
+        positive_weight_sum = weights[positive_mask].sum()
+        negative_weight_sum = weights[~positive_mask].sum()
+
+        print(f"Peso total positivo: {positive_weight_sum:.4f}")
+        print(f"Peso total negativo: {negative_weight_sum:.4f}")
+        print(f"Proporção positiva esperada: {positive_weight_sum / weights.sum():.4f}")
+        print("--------------------------------\n")
         sampler = torch.utils.data.WeightedRandomSampler(
             weights=weights,
             num_samples=max(1, len(weights)),
@@ -376,21 +402,27 @@ def _ensure_segmentation_shape(tensor, batch_size: Optional[int] = None):
 from pipeline.metrics.segmentation_metrics import compute_metrics
 
 
+
 def _threshold_metrics(tp, fp, fn, tn, eps: float = 1e-9) -> Dict[str, float]:
     precision = tp / (tp + fp + eps)
     recall = tp / (tp + fn + eps)
     iou = tp / (tp + fp + fn + eps)
+
     f1 = 2 * precision * recall / (precision + recall + eps)
+    f2 = 5 * precision * recall / (4 * precision + recall + eps)
+
     return {
         "iou": float(iou),
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
+        "f2": float(f2),
         "tp": int(tp),
         "fp": int(fp),
         "fn": int(fn),
         "tn": int(tn),
     }
+
 
 
 def _compute_confusion_from_logits(logits, target, valid_mask=None, threshold: float = 0.5):
@@ -450,7 +482,10 @@ def _evaluate_threshold_sweep(model, loader, device, thresholds: Sequence[float]
             "metrics": _threshold_metrics(tp, fp, fn, tn),
         })
 
-    best = max(threshold_metrics, key=lambda item: item["metrics"]["f1"])
+    best = max(
+        threshold_metrics,
+        key=lambda item: item["metrics"]["f2"]
+    )
     return threshold_metrics, best
 
 
@@ -546,6 +581,12 @@ class GenericTrainer:
             self._current_epoch = epoch + 1
             train_loss = self._train_epoch()
             val_loss, val_metrics, val_threshold_metrics, best_threshold_metrics = self._eval_epoch()
+            f" | predicted={val_metrics['frac_predicted']:.4f}"
+            f" | prevalence={val_metrics['prevalence']:.4f}"
+            f" | TP={val_metrics['tp']}"
+            f" FP={val_metrics['fp']}"
+            f" FN={val_metrics['fn']}"
+            f" TN={val_metrics['tn']}"
             train_metrics = self._aggregate_dataset_metrics(self.train_loader)
 
             history.append({
@@ -557,14 +598,22 @@ class GenericTrainer:
                 "threshold_sweep": val_threshold_metrics,
                 "best_threshold": best_threshold_metrics,
             })
+            
             print(
                 f"epoch {epoch + 1}/{self.config.epochs} | "
-                f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
-                f"val_iou={val_metrics['iou']:.4f} | val_precision={val_metrics['precision']:.4f} | "
-                f"val_recall={val_metrics['recall']:.4f} | val_f1={val_metrics['f1']:.4f} | "
-                f"best_threshold={best_threshold_metrics['threshold']:.2f} (f1={best_threshold_metrics['metrics']['f1']:.4f}) | "
+                f"train_loss={train_loss:.4f} | "
+                f"val_loss={val_loss:.4f} | "
+                f"val_iou={val_metrics['iou']:.4f} | "
+                f"val_precision={val_metrics['precision']:.4f} | "
+                f"val_recall={val_metrics['recall']:.4f} | "
+                f"val_f1={val_metrics['f1']:.4f} | "
+                f"val_f2={val_metrics['f2']:.4f} | "
+                f"best_threshold={best_threshold_metrics['threshold']:.2f} "
+                f"(f2={best_threshold_metrics['metrics']['f2']:.4f}, "
+                f"recall={best_threshold_metrics['metrics']['recall']:.4f}) | "
                 f"device={self.device}"
             )
+
         return history
 
 

@@ -20,7 +20,7 @@
     "use_batch_norm": true,
     "dropout": 0.1,
     "activation": "relu",
-    "output_activation": "sigmoid",
+    "output_activation": "identity",
     "decoder_channels": [256, 128, 64, 32],
     "alpha": 0.3,
     "beta": 0.7

@@ -28,11 +28,29 @@ MODEL_REGISTRY: dict[str, Callable[..., object]] = {
 }
 
 
+
 def normalize_model_name(name: str) -> str:
-    candidate = (name or "unet").strip().lower().replace("-", "_").replace("+", "")
-    if candidate == "u":
+    raw = (name or "unet").strip().lower()
+
+    unetpp_aliases = {
+        "unetpp",
+        "unet++",
+        "unet_pp",
+        "u_net_pp",
+        "u_netpp",
+        "u-net-pp",
+        "u-net++",
+        "u_net++",
+        "unet_plus_plus",
+        "u_net_plus_plus",
+        "u-net-plus-plus",
+    }
+    if raw in unetpp_aliases:
+        return "unetpp"
+    candidate = raw.replace("-", "_").replace("+", "")
+    if candidate in {"u", "u_net"}:
         return "unet"
-    if candidate == "u_small":
+    if candidate in {"u_small"}:
         return "unet_small"
     return candidate
 
