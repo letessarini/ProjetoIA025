@@ -1,8 +1,195 @@
+#!/usr/bin/env python3
+"""
+Varredura de modelos e losses para o projeto de segmentacao de inundacoes.
+
+Execute na raiz do repositorio:
+    python benchmark_models_losses.py --config pipeline/config/config.json
+
+O script chama pipeline.py separadamente para cada combinacao, salva um log
+por experimento e consolida as metricas encontradas em resultados_benchmark.csv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
 
 
+DEFAULT_LOSS_CONFIGS = {
+    "bce": {},
+    "tversky": {"alpha": 0.3, "beta": 0.7},
+    "focal": {"alpha": 0.25, "gamma": 2.0},
+}
 
-    
-  
+METRIC_PATTERNS = {
+    "val_iou": r"val_iou=([0-9]*\.?[0-9]+)",
+    "val_precision": r"val_precision=([0-9]*\.?[0-9]+)",
+    "val_recall": r"val_recall=([0-9]*\.?[0-9]+)",
+    "val_f1": r"val_f1=([0-9]*\.?[0-9]+)",
+    "val_f2": r"val_f2=([0-9]*\.?[0-9]+)",
+    "best_threshold": r"best_threshold=([0-9]*\.?[0-9]+)",
+}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Executa benchmark de modelos e losses."
+    )
+    parser.add_argument(
+        "--config",
+        default="pipeline/config/config.json",
+        help="Caminho do arquivo de configuracao do pipeline.",
+    )
+    parser.add_argument(
+        "--pipeline",
+        default="pipeline.py",
+        help="Caminho do script principal do treinamento.",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["unet", "unet++", "nnunet"],
+        help="Modelos a testar. Ex.: unet unet++ nnunet",
+    )
+    parser.add_argument(
+        "--losses",
+        nargs="+",
+        default=["bce", "tversky", "focal"],
+        help="Losses a testar. Ex.: bce tversky focal",
+    )
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limita o numero de amostras/patches para smoke test.",
+    )
+    parser.add_argument(
+        "--gpu",
+        default=None,
+        help="Valor de CUDA_VISIBLE_DEVICES. Ex.: 0",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="resultados_benchmark",
+        help="Pasta para logs e CSV.",
+    )
+    parser.add_argument(
+        "--loss-configs",
+        default=None,
+        help=(
+            "JSON opcional sobrescrevendo configs por loss. "
+            'Ex.: \'{"tversky":{"alpha":0.3,"beta":0.7},'
+            '"focal":{"alpha":0.25,"gamma":2.0}}\''
+        ),
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continua a varredura se um experimento falhar.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Pula experimentos que ja tenham arquivo .success.",
+    )
+    parser.add_argument(
+        "--python",
+        default=sys.executable,
+        help="Executavel Python usado para iniciar pipeline.py.",
+    )
+    return parser.parse_args()
+
+
+def slug(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_").lower()
+
+
+def extract_metrics(log_text: str) -> dict:
+    result = {}
+    for metric, pattern in METRIC_PATTERNS.items():
+        matches = re.findall(pattern, log_text)
+        result[metric] = float(matches[-1]) if matches else None
+    return result
+
+
+def main():
+    args = parse_args()
+
+    project_root = Path.cwd()
+    pipeline_path = (project_root / args.pipeline).resolve()
+    config_path = (project_root / args.config).resolve()
+    output_dir = (project_root / args.output_dir).resolve()
+    logs_dir = output_dir / "logs"
+
+    if not pipeline_path.is_file():
+        raise FileNotFoundError(f"Pipeline nao encontrado: {pipeline_path}")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Configuracao nao encontrada: {config_path}")
+    if args.epochs < 1:
+        raise ValueError("--epochs precisa ser maior que zero.")
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit precisa ser maior que zero.")
+
+    loss_configs = dict(DEFAULT_LOSS_CONFIGS)
+    if args.loss_configs:
+        custom_configs = json.loads(args.loss_configs)
+        if not isinstance(custom_configs, dict):
+            raise ValueError("--loss-configs precisa ser um objeto JSON.")
+        loss_configs.update(custom_configs)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    if args.gpu is not None:
+        env["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+    experiments = [
+        (model, loss)
+        for model in args.models
+        for loss in args.losses
+    ]
+
+    summary_path = output_dir / "resultados_benchmark.csv"
+    fields = [
+        "model",
+        "loss",
+        "epochs",
+        "status",
+        "return_code",
+        "val_iou",
+        "val_precision",
+        "val_recall",
+        "val_f1",
+        "val_f2",
+        "best_threshold",
+        "log_file",
+        "started_at",
+        "finished_at",
+    ]
+
+    rows = []
+    if args.resume and summary_path.exists():
+        with summary_path.open("r", newline="", encoding="utf-8") as file:
+            rows = list(csv.DictReader(file))
+
+    completed = {
+        (row["model"], row["loss"])
+        for row in rows
+        if row.get("status") == "success"
+    }
+
+    print(f"Experimentos planejados: {len(experiments)}")
+    print(f"Saida: {output_dir}")
+    print(f"GPU visivel: {env.get('CUDA_VISIBLE_DEVICES', 'padrao')}")
     print("Execucao sequencial: um treinamento por vez.\n")
 
     for index, (model, loss) in enumerate(experiments, start=1):
