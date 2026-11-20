@@ -10,3 +10,6 @@ TREINO_UNET/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
+
+# Generated GPU benchmark outputs
+/results/gpu_benchmark/

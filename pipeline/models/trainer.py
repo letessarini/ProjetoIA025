@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from copy import deepcopy
+import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -54,6 +56,21 @@ class TrainingConfig:
     oversample_positive_patches: bool = True
     positive_oversample_ratio: float = 0.7
     min_positive_fraction: float = 1e-6
+    input_channels: Optional[int] = None
+    train_patch_limit: Optional[int] = None
+    val_patch_limit: Optional[int] = None
+    eval_patch_limit: Optional[int] = None
+    split_strategy: str = "random_patch"
+    split_seed: int = 20261022
+    selection_metric: str = "f2"
+    threshold_bins: Optional[int] = None
+    early_stopping_patience: Optional[int] = None
+    cosine_schedule: bool = False
+    mixed_precision: bool = False
+    gradient_clip: Optional[float] = None
+    min_positive_pixels: Optional[int] = None
+    evaluate_train_set: bool = True
+    save_validation_predictions: bool = True
 
     @property
     def resolved_device(self) -> str:
@@ -65,14 +82,20 @@ class TrainingConfig:
 class PositiveOversamplingDataset:
     """Sample positive patches more often during training to match the legacy flood-segmentation logic."""
 
-    def __init__(self, patches: Sequence[Dict[str, Any]], positive_ratio: float = 0.7, min_positive_fraction: float = 1e-6):
+    def __init__(self, patches: Sequence[Dict[str, Any]], positive_ratio: float = 0.7, min_positive_fraction: float = 1e-6, min_positive_pixels: Optional[int] = None):
         self.patches = list(patches)
         self.positive_ratio = max(0.0, min(float(positive_ratio), 1.0))
         self.min_positive_fraction = max(0.0, float(min_positive_fraction))
-        self.positive_index = [self._is_positive_patch(p) for p in self.patches]
+        self.positive_index = [
+            self._is_positive_patch(p, self.min_positive_fraction, min_positive_pixels)
+            for p in self.patches
+        ]
 
     @staticmethod
-    def _is_positive_patch(patch, min_positive_fraction=1e-6):
+    def _is_positive_patch(patch, min_positive_fraction=1e-6, min_positive_pixels=None):
+        if "y" not in patch:
+            with np.load(patch["path"], allow_pickle=False) as data:
+                return PositiveOversamplingDataset._is_positive_patch(data, min_positive_fraction, min_positive_pixels)
         y = np.asarray(patch.get("y", []), dtype=np.float32)
         valid = np.asarray(
             patch.get("valido", np.ones_like(y)),
@@ -82,7 +105,10 @@ class PositiveOversamplingDataset:
         if y.size == 0 or valid.sum() == 0:
             return False
 
-        positive_fraction = ((y > 0.5) & valid).sum() / valid.sum()
+        count = ((y > 0.5) & valid).sum()
+        if min_positive_pixels is not None:
+            return bool(count >= min_positive_pixels)
+        positive_fraction = count / valid.sum()
 
         return bool(positive_fraction > max(0.0, min_positive_fraction))
 
@@ -90,11 +116,7 @@ class PositiveOversamplingDataset:
         return len(self.patches)
 
     def __getitem__(self, idx):
-        patch = self.patches[idx]
-        X = patch["X"].astype(np.float32)
-        y = patch["y"].astype(np.float32)
-        valid = patch["valido"].astype(np.float32)
-        return X, y, valid
+        return _patch_arrays(self.patches[idx])
 
     def sampler_weights(self):
         if not self.patches:
@@ -128,11 +150,14 @@ class PatchDataset:
         return len(self.patches)
 
     def __getitem__(self, idx: int):
-        patch = self.patches[idx]
-        X = patch["X"].astype(np.float32)
-        y = patch["y"].astype(np.float32)
-        valid = patch["valido"].astype(np.float32)
-        return X, y, valid
+        return _patch_arrays(self.patches[idx])
+
+
+def _patch_arrays(patch):
+    if "X" not in patch:
+        with np.load(patch["path"], allow_pickle=False) as data:
+            return _patch_arrays(data)
+    return tuple(np.asarray(patch[name], dtype=np.float32) for name in ("X", "y", "valido"))
 
 
 def _prepare_batch(batch: Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]], device: Any):
@@ -159,6 +184,7 @@ def build_loader(
     positive_oversample_ratio: float = 0.7,
     min_positive_fraction: float = 1e-6,
     seed: int = 20261022,
+    min_positive_pixels: Optional[int] = None,
 ):
     if torch is None:
         raise ModuleNotFoundError("PyTorch is required to train the model.")
@@ -168,6 +194,7 @@ def build_loader(
             patches,
             positive_ratio=positive_oversample_ratio,
             min_positive_fraction=min_positive_fraction,
+            min_positive_pixels=min_positive_pixels,
         )
         weights = dataset.sampler_weights()
         positive_mask = np.array(dataset.positive_index, dtype=bool)
@@ -214,7 +241,7 @@ def _aligned_valid_mask(target, valid_mask):
 
     valid_mask = valid_mask.to(device=target.device, dtype=torch.float32)
     if valid_mask.dim() == 2:
-        valid_mask = valid_mask.unsqueeze(1)
+        valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)
     elif valid_mask.dim() == 3:
         valid_mask = valid_mask.unsqueeze(1)
 
@@ -230,7 +257,7 @@ def _aligned_valid_mask(target, valid_mask):
 
 def _align_target_shape(logits, target):
     if target.dim() == 2:
-        target = target.unsqueeze(1)
+        target = target.unsqueeze(0).unsqueeze(0)
     elif target.dim() == 3:
         target = target.unsqueeze(1)
 
@@ -287,7 +314,7 @@ def compute_masked_weighted_bce_loss(logits, target, valid_mask=None, pos_weight
     return _safe_masked_mean(loss, valid_mask)
 
 
-def compute_masked_tversky_loss(logits, target, valid_mask=None, alpha: float = 0.3, beta: float = 0.7, eps: float = 1e-6):
+def compute_masked_tversky_loss(logits, target, valid_mask=None, alpha: float = 0.3, beta: float = 0.7, eps: float = 1e-6, reduction: str = "per_patch"):
     """Tversky loss on valid pixels only: a common sparse-segmentation objective.
 
     Tversky index = TP / (TP + alpha * FP + beta * FN), so beta > alpha makes false negatives more costly.
@@ -310,6 +337,10 @@ def compute_masked_tversky_loss(logits, target, valid_mask=None, alpha: float = 
     fp = (probs * (1.0 - target_masked)).sum(dim=(1, 2, 3))
     fn = ((1.0 - probs) * target_masked).sum(dim=(1, 2, 3))
 
+    if reduction == "batch":
+        tp, fp, fn = tp.sum(), fp.sum(), fn.sum()
+    elif reduction != "per_patch":
+        raise ValueError(f"Unknown Tversky reduction: {reduction}")
     tversky = (tp + eps) / (tp + alpha * fp + beta * fn + eps)
     return (1.0 - tversky).mean()
 
@@ -336,8 +367,30 @@ def build_loss(loss_name: str = "weighted_bce", loss_config: Optional[Dict[str, 
         eps = float(cfg.get("eps", 1e-6))
 
         def _loss(logits, target, valid_mask=None):
-            return compute_masked_tversky_loss(logits, target, valid_mask, alpha=alpha, beta=beta, eps=eps)
+            return compute_masked_tversky_loss(logits, target, valid_mask, alpha=alpha, beta=beta, eps=eps, reduction=cfg.get("tversky_reduction", "per_patch"))
 
+        return _loss
+
+    if normalized in {"hybrid", "bce_tversky", "hybrid_bce_tversky"}:
+        alpha = float(cfg.get("alpha", 0.3))
+        beta = float(cfg.get("beta", 0.7))
+        bce_weight = float(cfg.get("bce_weight", 0.5))
+        tversky_weight = float(cfg.get("tversky_weight", 0.5))
+        if bce_weight < 0 or tversky_weight < 0 or bce_weight + tversky_weight <= 0:
+            raise ValueError("Hybrid weights must be nonnegative and not both zero")
+
+        def _loss(logits, target, valid_mask=None):
+            bce = compute_masked_bce_loss(logits, target, valid_mask)
+            tversky = compute_masked_tversky_loss(logits, target, valid_mask, alpha=alpha, beta=beta, reduction=cfg.get("tversky_reduction", "per_patch"))
+            return (bce_weight * bce + tversky_weight * tversky) / (bce_weight + tversky_weight)
+
+        return _loss
+
+    if normalized == "bce_dice":
+        def _loss(logits, target, valid_mask=None):
+            return compute_masked_bce_loss(logits, target, valid_mask) + compute_masked_tversky_loss(
+                logits, target, valid_mask, alpha=0.5, beta=0.5
+            )
         return _loss
 
     if normalized in {"focal", "focal_loss"}:
@@ -373,7 +426,7 @@ def build_loss(loss_name: str = "weighted_bce", loss_config: Optional[Dict[str, 
 
         return _loss
 
-    raise ValueError(f"Unsupported loss '{loss_name}'. Supported: bce, weighted_bce, tversky, focal")
+    raise ValueError(f"Unsupported loss '{loss_name}'. Supported: bce, weighted_bce, tversky, focal, hybrid, bce_dice")
 
 
 def _print_progress(label: str, current: int, total: int) -> None:
@@ -399,7 +452,7 @@ def _ensure_segmentation_shape(tensor, batch_size: Optional[int] = None):
     return tensor
 
 
-from pipeline.metrics.segmentation_metrics import compute_metrics
+from pipeline.metrics.segmentation_metrics import compute_histogram_metrics, compute_metrics
 
 
 
@@ -461,32 +514,38 @@ def _compute_confusion_from_logits(logits, target, valid_mask=None, threshold: f
     return tp, fp, fn, tn
 
 
-def _evaluate_threshold_sweep(model, loader, device, thresholds: Sequence[float]):
+def _evaluate_threshold_sweep(model, loader, device, thresholds: Sequence[float], input_channels: int = 10, selection_metric: str = "f2"):
     model.eval()
-    threshold_metrics = []
-    for threshold in thresholds:
-        tp = fp = fn = tn = 0
-        with torch.no_grad():
-            for X, y, valid in loader:
-                X = X.to(device)
-                y = _ensure_segmentation_shape(y.to(device), batch_size=X.shape[0])
-                valid = _ensure_segmentation_shape(valid.to(device), batch_size=X.shape[0])
-                logits = model(X)
-                batch_tp, batch_fp, batch_fn, batch_tn = _compute_confusion_from_logits(logits, y, valid, threshold=threshold)
-                tp += batch_tp
-                fp += batch_fp
-                fn += batch_fn
-                tn += batch_tn
-        threshold_metrics.append({
-            "threshold": float(threshold),
-            "metrics": _threshold_metrics(tp, fp, fn, tn),
-        })
+    thresholds = [float(t) for t in thresholds]
+    if not thresholds:
+        raise ValueError("At least one threshold is required")
+    counts = {t: [0, 0, 0, 0] for t in thresholds}
+    with torch.no_grad():
+        for X, y, valid in loader:
+            X = X.to(device)[:, :input_channels]
+            y = _ensure_segmentation_shape(y.to(device), batch_size=X.shape[0])
+            valid = _ensure_segmentation_shape(valid.to(device), batch_size=X.shape[0])
+            logits = model(X)
+            for threshold in thresholds:
+                confusion = _compute_confusion_from_logits(logits, y, valid, threshold=threshold)
+                counts[threshold] = [a + b for a, b in zip(counts[threshold], confusion)]
+    threshold_metrics = [
+        {"threshold": t, "metrics": _threshold_metrics(*counts[t])}
+        for t in thresholds
+    ]
+    best = max(threshold_metrics, key=lambda item: (item["metrics"][selection_metric], item["metrics"]["precision"]))
+    return threshold_metrics, best
 
-        best = max(
-            threshold_metrics,
-            key=lambda item: item["metrics"]["f2"]
-        )
-        return threshold_metrics, best
+
+def _add_score_histogram(hist, logits, target, valid):
+    select = valid.detach().cpu().numpy() > 0.5
+    scores = torch.sigmoid(logits.float()).detach().cpu().numpy()[select]
+    if not np.isfinite(scores).all():
+        raise ValueError("Non-finite model scores on valid pixels")
+    labels = target.detach().cpu().numpy()[select] > 0.5
+    bins = np.minimum((scores.astype(np.float64) * (hist.shape[1] - 1)).astype(int), hist.shape[1] - 1)
+    hist[0] += np.bincount(bins[~labels], minlength=hist.shape[1])
+    hist[1] += np.bincount(bins[labels], minlength=hist.shape[1])
 
 
 class GenericTrainer:
@@ -497,12 +556,27 @@ class GenericTrainer:
         self.config = config
         self.device = torch.device(config.resolved_device)
         self.model.to(self.device)
+        self.best_state = None
+        self.best_epoch = None
+        self.best_val_f2 = -1.0
+        self.best_score = -1.0
+        self.best_threshold = None
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
         self.criterion = build_loss(config.loss_name, config.loss_config)
+        self.scheduler = (
+            torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=config.epochs)
+            if config.cosine_schedule else None
+        )
+        self.amp = config.mixed_precision and self.device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.amp else None
+
+    def _forward(self, inputs):
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp):
+            return self.model(inputs).float()
 
     def _train_epoch(self):
         self.model.train()
@@ -512,16 +586,26 @@ class GenericTrainer:
         print(f"[Stage 2/2] Modelling: training epoch {self._current_epoch}/{self.config.epochs}")
 
         for batch_idx, (X, y, valid) in enumerate(self.train_loader, start=1):
-            X = X.to(self.device)
+            X = X.to(self.device)[:, :self.config.input_channels]
             y = _ensure_segmentation_shape(y.to(self.device), batch_size=X.shape[0])
             valid = _ensure_segmentation_shape(valid.to(self.device), batch_size=X.shape[0])
 
-            logits = self.model(X)
+            logits = self._forward(X)
             loss = self.criterion(logits, y, valid)
 
             self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            self.optimizer.step()
+            if self.scaler is None:
+                loss.backward()
+            else:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+            if self.config.gradient_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+            if self.scaler is None:
+                self.optimizer.step()
+            else:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
 
             total_loss += float(loss.item()) * X.size(0)
             total_samples += X.size(0)
@@ -534,7 +618,7 @@ class GenericTrainer:
         tp = fp = fn = tn = 0
         with torch.no_grad():
             for X, y, valid in loader:
-                X = X.to(self.device)
+                X = X.to(self.device)[:, :self.config.input_channels]
                 y = _ensure_segmentation_shape(y.to(self.device), batch_size=X.shape[0])
                 valid = _ensure_segmentation_shape(valid.to(self.device), batch_size=X.shape[0])
                 logits = self.model(X)
@@ -551,43 +635,69 @@ class GenericTrainer:
         total_samples = 0
         data_len = len(self.val_loader)
         tp = fp = fn = tn = 0
+        hist = None if self.config.threshold_bins is None else np.zeros((2, self.config.threshold_bins + 1), dtype=np.int64)
 
         for batch_idx, (X, y, valid) in enumerate(self.val_loader, start=1):
-            X = X.to(self.device)
+            X = X.to(self.device)[:, :self.config.input_channels]
             y = _ensure_segmentation_shape(y.to(self.device), batch_size=X.shape[0])
             valid = _ensure_segmentation_shape(valid.to(self.device), batch_size=X.shape[0])
 
             with torch.no_grad():
-                logits = self.model(X)
+                logits = self._forward(X)
                 loss = self.criterion(logits, y, valid)
 
             total_loss += float(loss.item()) * X.size(0)
             total_samples += X.size(0)
 
-            batch_tp, batch_fp, batch_fn, batch_tn = _compute_confusion_from_logits(logits, y, valid, threshold=0.5)
-            tp += batch_tp
-            fp += batch_fp
-            fn += batch_fn
-            tn += batch_tn
+            if hist is None:
+                batch_tp, batch_fp, batch_fn, batch_tn = _compute_confusion_from_logits(logits, y, valid, threshold=0.5)
+                tp += batch_tp
+                fp += batch_fp
+                fn += batch_fn
+                tn += batch_tn
+            else:
+                _add_score_histogram(hist, logits, y, valid)
             _print_progress("Validation batches", batch_idx, data_len)
 
-        base_metrics = compute_metrics(tp, fp, fn, tn)
-        threshold_metrics, best_threshold_metrics = _evaluate_threshold_sweep(self.model, self.val_loader, self.device, self.config.thresholds)
+        if hist is None:
+            base_metrics = compute_metrics(tp, fp, fn, tn)
+            threshold_metrics, best_threshold_metrics = _evaluate_threshold_sweep(
+                self.model, self.val_loader, self.device, self.config.thresholds,
+                self.config.input_channels, self.config.selection_metric
+            )
+        else:
+            base_metrics = compute_histogram_metrics(hist, 0.5)["metrics"]
+            threshold_metrics = [compute_histogram_metrics(hist, t) for t in self.config.thresholds]
+            best_threshold_metrics = compute_histogram_metrics(hist, selection_metric=self.config.selection_metric)
         return total_loss / max(1, total_samples), base_metrics, threshold_metrics, best_threshold_metrics
 
-    def train(self):
+    def evaluate_holdout(self, loader, threshold):
+        hist = np.zeros((2, (self.config.threshold_bins or 1000) + 1), dtype=np.int64)
+        self.model.eval()
+        with torch.no_grad():
+            for X, y, valid in loader:
+                logits = self._forward(X[:, :self.config.input_channels].to(self.device))
+                _add_score_histogram(hist, logits, y.unsqueeze(1), valid.unsqueeze(1))
+        return compute_histogram_metrics(hist, threshold)
+
+    def train(self, on_improvement=None):
         history = []
         for epoch in range(self.config.epochs):
             self._current_epoch = epoch + 1
             train_loss = self._train_epoch()
             val_loss, val_metrics, val_threshold_metrics, best_threshold_metrics = self._eval_epoch()
-            f" | predicted={val_metrics['frac_predicted']:.4f}"
-            f" | prevalence={val_metrics['prevalence']:.4f}"
-            f" | TP={val_metrics['tp']}"
-            f" FP={val_metrics['fp']}"
-            f" FN={val_metrics['fn']}"
-            f" TN={val_metrics['tn']}"
-            train_metrics = self._aggregate_dataset_metrics(self.train_loader)
+            if self.scheduler is not None:
+                self.scheduler.step()
+            train_metrics = self._aggregate_dataset_metrics(self.train_loader) if self.config.evaluate_train_set else None
+
+            score = float(best_threshold_metrics["metrics"][self.config.selection_metric])
+            improved = score > self.best_score
+            if improved:
+                self.best_score = score
+                self.best_val_f2 = float(best_threshold_metrics["metrics"]["f2"])
+                self.best_epoch = epoch + 1
+                self.best_state = deepcopy(self.model.state_dict())
+                self.best_threshold = best_threshold_metrics["threshold"]
 
             history.append({
                 "epoch": epoch + 1,
@@ -598,6 +708,8 @@ class GenericTrainer:
                 "threshold_sweep": val_threshold_metrics,
                 "best_threshold": best_threshold_metrics,
             })
+            if improved and on_improvement is not None:
+                on_improvement(history)
             
             print(
                 f"epoch {epoch + 1}/{self.config.epochs} | "
@@ -607,13 +719,22 @@ class GenericTrainer:
                 f"val_precision={val_metrics['precision']:.4f} | "
                 f"val_recall={val_metrics['recall']:.4f} | "
                 f"val_f1={val_metrics['f1']:.4f} | "
-                f"val_f2={val_metrics.get('f2', 0.0):.4f} | "
-                f"best_threshold={best_threshold_metrics['threshold']:.2f} "
-                f"(f2={best_threshold_metrics['metrics']['f2']:.4f}, "
+                f"val_f2={_threshold_metrics(val_metrics['tp'], val_metrics['fp'], val_metrics['fn'], val_metrics['tn'])['f2']:.4f} | "
+                f"best_threshold={best_threshold_metrics['threshold']:.3f} "
+                f"(iou={best_threshold_metrics['metrics']['iou']:.4f}, "
+                f"f2={best_threshold_metrics['metrics']['f2']:.4f}, "
                 f"recall={best_threshold_metrics['metrics']['recall']:.4f}) | "
+                f"predicted={val_metrics['frac_predicted']:.4f} | "
+                f"prevalence={val_metrics['prevalence']:.4f} | "
                 f"device={self.device}"
             )
+            patience = self.config.early_stopping_patience
+            if patience is not None and epoch + 1 - self.best_epoch >= patience:
+                print(f"Early stopping after {epoch + 1} epochs")
+                break
 
+        if self.best_state is not None:
+            self.model.load_state_dict(self.best_state)
         return history
 
 
@@ -631,21 +752,25 @@ def _save_run_metadata(run_dir: Path, model_name: str, config: TrainingConfig, h
     return metadata
 
 
-def _save_predictions(model, patches: Sequence[Dict[str, Any]], run_dir: Path, device: Any):
+def _patch_name(patch):
+    name = patch.get("meta", {}).get("name")
+    return Path(name or patch["path"]).name
+
+
+def _save_predictions(model, patches: Sequence[Dict[str, Any]], run_dir: Path, device: Any, input_channels: int = 10):
     model.eval()
     preds_dir = run_dir / "predictions"
     preds_dir.mkdir(parents=True, exist_ok=True)
 
     for patch in patches:
-        x = torch.from_numpy(np.asarray(patch["X"], dtype=np.float32)).unsqueeze(0).to(device)
-        target = np.asarray(patch["y"], dtype=np.float32)
-        valid = np.asarray(patch["valido"], dtype=np.float32)
+        features, target, valid = _patch_arrays(patch)
+        x = torch.from_numpy(features[:input_channels]).unsqueeze(0).to(device)
 
         with torch.no_grad():
             logits = model(x)
             prob = torch.sigmoid(logits).cpu().numpy()[0, 0]
 
-        file_name = Path(patch["meta"]["name"]) if "meta" in patch and "name" in patch["meta"] else Path(str(patch["path"]).split("\\")[-1])
+        file_name = Path(_patch_name(patch))
         out_path = preds_dir / f"{file_name.stem}_prediction.npz"
         np.savez_compressed(
             out_path,
@@ -660,28 +785,90 @@ def _save_predictions(model, patches: Sequence[Dict[str, Any]], run_dir: Path, d
     return summary
 
 
-def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: Optional[TrainingConfig] = None):
+def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: Optional[TrainingConfig] = None, manifest=None):
     """Train a generic model from a list of prepared patches."""
     if torch is None:
         raise ModuleNotFoundError("PyTorch is required to run model training.")
 
     config = config or TrainingConfig(model_name=model_name)
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
+    if config.selection_metric not in {"iou", "f2"}:
+        raise ValueError("selection_metric must be iou or f2")
+    if config.threshold_bins is not None and config.threshold_bins < 2:
+        raise ValueError("threshold_bins must be at least 2")
+    if config.epochs < 1:
+        raise ValueError("epochs must be positive")
+    if config.early_stopping_patience is not None and config.early_stopping_patience < 1:
+        raise ValueError("early_stopping_patience must be positive")
+    if not dataset:
+        raise ValueError("Training dataset is empty")
+    available_channels = _patch_arrays(dataset[0])[0].shape[0]
+    if config.input_channels is None:
+        config = replace(config, input_channels=available_channels)
+    if not 1 <= config.input_channels <= available_channels:
+        raise ValueError(f"input_channels={config.input_channels} invalid for dataset")
     rng = np.random.RandomState(config.seed)
-    shuffled = list(dataset)
-    rng.shuffle(shuffled)
+    holdouts = {}
+    if config.split_strategy == "date_region":
+        from pipeline.data_preparation.dataset_splitter import conferir_vazamento, montar_split
 
-    split_index = max(1, int(len(shuffled) * config.train_eval_ratio))
-    train_patches = shuffled[:split_index]
-    val_patches = shuffled[split_index:]
+        if manifest is None:
+            raise ValueError("date_region requires a dataset manifest")
+        if config.limit is not None:
+            raise ValueError("Use train_patch_limit with date_region to preserve holdouts")
+        rainfall = {item["data"]: item["chuva_total_mm_media"] for item in manifest["datas"]}
+        by_path = {patch["path"]: patch for patch in dataset}
+        items = []
+        for path in sorted(by_path):
+            date, row, col = Path(path).stem.split("_")
+            items.append((path, date, int(row[1:]), int(col[1:]), rainfall[date]))
+        groups, date_roles, region_roles = montar_split(items, semente=config.split_seed)
+        issues = conferir_vazamento(groups, items, date_roles, region_roles)
+        if issues:
+            raise ValueError(f"Invalid grouped split: {issues}")
+        train_patches = [by_path[path] for path in groups.get("treino", [])]
+        val_patches = [by_path[path] for path in groups.get("validacao", [])]
+        holdouts = {key: [by_path[path] for path in paths]
+                    for key, paths in groups.items() if key.startswith("teste_")}
+        if config.train_patch_limit is not None:
+            np.random.RandomState(config.split_seed).shuffle(train_patches)
+    elif config.split_strategy == "random_patch":
+        shuffled = list(dataset)
+        rng.shuffle(shuffled)
+        split_index = max(1, int(len(shuffled) * config.train_eval_ratio))
+        train_patches = shuffled[:split_index]
+        val_patches = shuffled[split_index:]
+    else:
+        raise ValueError(f"Unknown split_strategy: {config.split_strategy}")
 
+    if config.eval_patch_limit is not None:
+        if config.eval_patch_limit < 1:
+            raise ValueError("eval_patch_limit must be positive")
+        eval_rng = np.random.RandomState(config.split_seed)
+        val_patches = [val_patches[i] for i in eval_rng.permutation(len(val_patches))[:config.eval_patch_limit]]
+        holdouts = {
+            key: [patches[i] for i in eval_rng.permutation(len(patches))[:config.eval_patch_limit]]
+            for key, patches in sorted(holdouts.items())
+        }
+    if config.train_patch_limit is not None:
+        train_patches = train_patches[:config.train_patch_limit]
+    if config.val_patch_limit is not None:
+        val_patches = val_patches[:config.val_patch_limit]
     if config.limit is not None:
-        train_patches = train_patches[: config.limit]
-        val_patches = val_patches[: max(1, config.limit // 2)]
+        train_patches = train_patches[:config.limit]
+        val_patches = val_patches[:max(1, config.limit // 2)]
+    if not train_patches or not val_patches:
+        raise ValueError("Training and validation splits must be nonempty")
+    print(f"Split: train={len(train_patches)} val={len(val_patches)} input_channels={config.input_channels}")
 
     from pipeline.models.factory import get_model
 
     model_config = getattr(config, "model_config", None)
-    model = get_model(model_name, in_channels=train_patches[0]["X"].shape[0], model_config=model_config)
+    model = get_model(model_name, in_channels=config.input_channels, model_config=model_config)
     train_loader = build_loader(
         train_patches,
         batch_size=config.batch_size,
@@ -690,6 +877,7 @@ def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: O
         positive_oversample_ratio=config.positive_oversample_ratio,
         min_positive_fraction=config.min_positive_fraction,
         seed=config.seed,
+        min_positive_pixels=config.min_positive_pixels,
     )
     val_loader = build_loader(
         val_patches,
@@ -701,23 +889,44 @@ def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: O
         seed=config.seed,
     )
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_dir = Path(config.output_dir) / f"{timestamp}_{model_name}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    split = {key: [_patch_name(patch) for patch in patches]
+             for key, patches in {"treino": train_patches, "validacao": val_patches, **holdouts}.items()}
+    (run_dir / "split.json").write_text(json.dumps(split, indent=2), encoding="utf-8")
+    print(f"Run directory: {run_dir}")
     trainer = GenericTrainer(model=model, train_loader=train_loader, val_loader=val_loader, config=config)
-    history = trainer.train()
-
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_dir / f"{timestamp}_{model_name}"
-    metadata = _save_run_metadata(run_dir, model_name, config, history, str(trainer.device))
-    prediction_summary = _save_predictions(model, val_patches, run_dir, trainer.device)
-
     checkpoint_path = run_dir / config.checkpoint_name
-    torch.save({
-        "model_name": model_name,
-        "history": history,
-        "config": config.__dict__,
-        "state_dict": model.state_dict(),
-    }, checkpoint_path)
+
+    def save_checkpoint(history):
+        temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+        torch.save({
+            "model_name": model_name,
+            "history": history,
+            "config": config.__dict__,
+            "state_dict": trainer.best_state,
+            "best_epoch": trainer.best_epoch,
+            "best_val_f2": trainer.best_val_f2,
+            "best_threshold": trainer.best_threshold,
+            "split": split,
+        }, temporary_path)
+        temporary_path.replace(checkpoint_path)
+
+    history = trainer.train(on_improvement=save_checkpoint)
+    save_checkpoint(history)
+    metadata = _save_run_metadata(run_dir, model_name, config, history, str(trainer.device))
+    metadata.update(best_epoch=trainer.best_epoch, best_val_f2=trainer.best_val_f2,
+                    best_threshold=trainer.best_threshold, split_counts={key: len(value) for key, value in split.items()})
+    metadata["holdouts"] = {
+        key: trainer.evaluate_holdout(build_loader(patches, config.batch_size), trainer.best_threshold)
+        for key, patches in holdouts.items()
+    }
+    (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    prediction_summary = (
+        _save_predictions(model, val_patches, run_dir, trainer.device, config.input_channels)
+        if config.save_validation_predictions else None
+    )
 
     return {
         "history": history,

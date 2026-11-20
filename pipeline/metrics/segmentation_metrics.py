@@ -44,6 +44,26 @@ def compute_metrics(tp: int, fp: int, fn: int, tn: int, eps: float = 1e-9) -> Di
 
 
 
+def compute_histogram_metrics(hist, threshold=None, selection_metric="iou"):
+    """Compute metrics from negative/positive score bins using a fixed or selected cutoff."""
+    neg, pos = hist
+    fp = neg[::-1].cumsum()[::-1]
+    tp = pos[::-1].cumsum()[::-1]
+    positives, negatives = pos.sum(), neg.sum()
+    precision = tp / np.maximum(tp + fp, 1)
+    iou = tp / np.maximum(positives + fp, 1)
+    f2 = 5 * tp / np.maximum(4 * positives + tp + fp, 1)
+    steps = len(pos) - 1
+    if threshold is None:
+        objective = {"iou": iou, "f2": f2}[selection_metric]
+        index = 1 + int(np.argmax(objective[1:]))
+    else:
+        index = round(threshold * steps)
+    metrics = compute_metrics(int(tp[index]), int(fp[index]), int(positives - tp[index]), int(negatives - fp[index]))
+    metrics["ap_binned"] = float(pos @ precision / positives) if positives else None
+    return {"threshold": index / steps, "metrics": metrics}
+
+
 def compute_metrics_for_prediction(pred, target, valid=None, threshold: float = 0.5) -> Dict[str, float]:
     pred_bin = np.asarray(pred) >= threshold
     tp, fp, fn, tn = count_pixels(pred_bin, target, valid)

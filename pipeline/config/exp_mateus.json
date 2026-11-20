@@ -1,0 +1,30 @@
+{
+  "model": "unet_resnet34",
+  "benchmark_models": ["unet", "unet_resnet34"],
+  "model_configs": {
+    "unet": {"base_channels": 16, "depth": 3},
+    "unet_resnet34": {"encoder_weights": "imagenet"}
+  },
+  "input_channels": 10,
+  "epochs": 80,
+  "batch_size": 8,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.00001,
+  "split_strategy": "date_region",
+  "seed": 20261022,
+  "split_seed": 20261022,
+  "loss_name": "bce_dice",
+  "oversample_positive_patches": true,
+  "positive_oversample_ratio": 0.7,
+  "min_positive_pixels": 28,
+  "selection_metric": "iou",
+  "threshold_bins": 1000,
+  "early_stopping_patience": 15,
+  "cosine_schedule": true,
+  "mixed_precision": true,
+  "gradient_clip": 1.0,
+  "evaluate_train_set": false,
+  "save_validation_predictions": false,
+  "output_dir": "results/gpu_benchmark",
+  "checkpoint_name": "best_model.pt"
+}

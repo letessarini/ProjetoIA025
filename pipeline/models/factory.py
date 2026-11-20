@@ -5,8 +5,21 @@ from typing import Callable
 from pipeline.models.unet_model import build_unet, build_unetpp
 from pipeline.models.nnunet_adapter import build_nnunet_model
 
+
+def build_unet_resnet34(in_channels: int, encoder_weights: str | None = "imagenet"):
+    import segmentation_models_pytorch as smp
+
+    return smp.Unet(
+        encoder_name="resnet34",
+        encoder_weights=encoder_weights,
+        in_channels=in_channels,
+        classes=1,
+        activation=None,
+    )
+
 MODEL_REGISTRY: dict[str, Callable[..., object]] = {
     "unet": build_unet,
+    "unet_resnet34": build_unet_resnet34,
     "unetpp": build_unetpp,
     "unet_pp": build_unetpp,
     "u_net_pp": build_unetpp,

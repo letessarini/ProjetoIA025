@@ -12,7 +12,7 @@ def regiao_do_patch(y0: int, x0: int, lado: int = 512) -> Tuple[int, int]:
 
 
 def dividir_datas(datas: List[str], chuva: List[float], frac: Tuple[float, float, float] = (0.70, 0.15, 0.15), semente: int = 20261022) -> Dict[str, str]:
-    """Split dates into train/val/test while preserving rainfall stratification."""
+    """Shuffle train/val/test assignments over dates in deterministic rainfall order."""
     ordem = sorted(range(len(datas)), key=lambda i: (-float(chuva[i]), str(datas[i])))
     n = len(ordem)
     alvo = [int(round(f * n)) for f in frac]
