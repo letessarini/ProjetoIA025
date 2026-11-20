@@ -10,3 +10,8 @@ TREINO_UNET/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
+
+# Generated experiment outputs
+/results/
+/resultados*/
+/evaluation_saved_predictions/
