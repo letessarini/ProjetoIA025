@@ -18,6 +18,33 @@ from pipeline.data_preparation.dataset_loader import find_dataset_dir, list_patc
 DEFAULT_DATASET_NAME = "FloodSegmentation"
 
 
+def export_nnunet_cases(patches, images_dir: Path, channels: int, resolution_m: float, labels_dir: Optional[Path] = None):
+    """Write singleton-depth NIfTI volumes with the original patch row/column order."""
+    import SimpleITK as sitk
+
+    images_dir.mkdir(parents=True, exist_ok=True)
+    if labels_dir is not None:
+        labels_dir.mkdir(parents=True, exist_ok=True)
+    spacing = (resolution_m * 1000,) * 3  # NIfTI stores spatial units in millimeters
+
+    def save(array, path):
+        image = sitk.GetImageFromArray(array[None])
+        image.SetSpacing(spacing)
+        sitk.WriteImage(image, str(path), useCompression=True)
+
+    for patch in patches:
+        path = Path(patch["path"])
+        with np.load(path, allow_pickle=False) as data:
+            features = data["X"]
+            target, valid = data["y"], data["valido"]
+        if features.ndim != 3 or features.shape[0] < channels or features.shape[1:] != target.shape or target.shape != valid.shape:
+            raise ValueError(f"Unexpected channel or mask shape in {path}")
+        for i in range(channels):
+            save(features[i].astype(np.float32), images_dir / f"{path.stem}_{i:04d}.nii.gz")
+        if labels_dir is not None:
+            save(np.where(valid > .5, target > .5, 2).astype(np.uint8), labels_dir / f"{path.stem}.nii.gz")
+
+
 def convert_project_patches_to_nnunet(
     raw_root: Optional[Path | str] = None,
     dataset_id: int = 102,

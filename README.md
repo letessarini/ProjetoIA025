@@ -8,11 +8,11 @@ runs training and evaluation for both root entry points.
 ## Setup
 
 Use a CUDA-enabled PyTorch environment for the full benchmark. Install the
-pretrained encoder dependency in the same Python environment. The first
+benchmark dependencies in the same Python environment. The first
 ResNet-34 run downloads ImageNet weights.
 
 ```bash
-python -m pip install segmentation-models-pytorch
+python -m pip install "segmentation-models-pytorch==0.6.0" "nnunetv2==2.6.4"
 ```
 
 The dataset directory contains `manifest.json` and `patches/*.npz`. Each patch
@@ -40,19 +40,18 @@ python pipeline.py --config pipeline/config/exp_mateus.json --model unet_resnet3
 Share `comparison.csv` and `split.json` from the new benchmark results folder.
 Each model also saves its training history and best checkpoint.
 Use `--models` or the configuration's `benchmark_models` list to choose
-architectures already registered in the pipeline.
+architectures already registered in the pipeline. See [BENCHMARK.md](BENCHMARK.md)
+for all five configurations, losses, and hypotheses.
 
 ## Experiment plan
 
 1. **Smoke test on the target GPU.** One epoch and four patches per split check
    dependency loading, CUDA mixed precision, masked training, checkpoints,
    and the report before committing to a long run.
-2. **Matched full-budget U-Net comparison.** Train the plain U-Net and
-   ImageNet-pretrained ResNet-34 U-Net on the same date-and-region split,
-   with masked BCE + Dice and up to 80 epochs. The CPU pilot suggested a
-   temporal gain and a spatial loss for ResNet-34. This comparison tests
-   whether that tradeoff persists with the full training set. The pipeline
-   selects each cutoff by validation IoU and fixes it for all holdouts.
+2. **Full comparison.** Train paired U-Net and U-Net++ models with small
+   and ResNet-34 encoders. Also run 2D nnU-Net on the same splits as an
+   external baseline with its native training recipe. The pipeline selects
+   each cutoff by validation IoU and fixes it for all holdouts.
    Read AP against prevalence and check Recall, F2, and predicted area at
    that cutoff. Interpret temporal, spatial, and combined holdouts separately.
 3. **Repeat and verify a promising result.** If a candidate gains on the

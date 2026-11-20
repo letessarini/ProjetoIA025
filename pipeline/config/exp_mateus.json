@@ -1,9 +1,11 @@
 {
   "model": "unet_resnet34",
-  "benchmark_models": ["unet", "unet_resnet34"],
+  "benchmark_models": ["unet", "unetpp", "unet_resnet34", "unetpp_resnet34", "nnunet_2d"],
   "model_configs": {
     "unet": {"base_channels": 16, "depth": 3},
-    "unet_resnet34": {"encoder_weights": "imagenet"}
+    "unetpp": {"base_channels": 16, "depth": 3},
+    "unet_resnet34": {"encoder_weights": "imagenet"},
+    "unetpp_resnet34": {"encoder_weights": "imagenet"}
   },
   "input_channels": 10,
   "epochs": 80,

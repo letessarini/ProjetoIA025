@@ -44,6 +44,18 @@ def compute_metrics(tp: int, fp: int, fn: int, tn: int, eps: float = 1e-9) -> Di
 
 
 
+def update_score_histogram(hist, probabilities, target, valid):
+    """Accumulate class counts at each probability bin over valid pixels."""
+    select = valid > 0.5
+    scores = probabilities[select].astype(np.float64)
+    if not np.isfinite(scores).all() or np.any((scores < 0) | (scores > 1)):
+        raise ValueError("Expected finite probabilities in [0, 1] on valid pixels")
+    labels = target[select] > 0.5
+    bins = (scores * (hist.shape[1] - 1)).astype(int)
+    hist[0] += np.bincount(bins[~labels], minlength=hist.shape[1])
+    hist[1] += np.bincount(bins[labels], minlength=hist.shape[1])
+
+
 def compute_histogram_metrics(hist, threshold=None, selection_metric="iou"):
     """Compute metrics from negative/positive score bins using a fixed or selected cutoff."""
     neg, pos = hist

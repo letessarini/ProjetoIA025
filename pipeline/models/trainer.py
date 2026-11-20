@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from pipeline.metrics.segmentation_metrics import compute_histogram_metrics, compute_metrics
+from pipeline.metrics.segmentation_metrics import compute_histogram_metrics, compute_metrics, update_score_histogram
 
 try:
     import torch
@@ -501,14 +501,10 @@ def _evaluate_threshold_sweep(model, loader, device, thresholds: Sequence[float]
 
 
 def _add_score_histogram(hist, logits, target, valid):
-    select = valid.detach().cpu().numpy() > 0.5
-    scores = torch.sigmoid(logits.float()).detach().cpu().numpy()[select]
-    if not np.isfinite(scores).all():
-        raise ValueError("Non-finite model scores on valid pixels")
-    labels = target.detach().cpu().numpy()[select] > 0.5
-    bins = np.minimum((scores.astype(np.float64) * (hist.shape[1] - 1)).astype(int), hist.shape[1] - 1)
-    hist[0] += np.bincount(bins[~labels], minlength=hist.shape[1])
-    hist[1] += np.bincount(bins[labels], minlength=hist.shape[1])
+    update_score_histogram(
+        hist, torch.sigmoid(logits.float()).detach().cpu().numpy(),
+        target.detach().cpu().numpy(), valid.detach().cpu().numpy(),
+    )
 
 
 class GenericTrainer:
@@ -748,32 +744,8 @@ def _save_predictions(model, patches: Sequence[Dict[str, Any]], run_dir: Path, d
     return summary
 
 
-def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: Optional[TrainingConfig] = None, manifest=None):
-    """Train a generic model from a list of prepared patches."""
-    if torch is None:
-        raise ModuleNotFoundError("PyTorch is required to run model training.")
-
-    config = config or TrainingConfig(model_name=model_name)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config.seed)
-    if config.selection_metric not in {"iou", "f2"}:
-        raise ValueError("selection_metric must be iou or f2")
-    if config.threshold_bins is not None and config.threshold_bins < 2:
-        raise ValueError("threshold_bins must be at least 2")
-    if config.epochs < 1:
-        raise ValueError("epochs must be positive")
-    if config.early_stopping_patience is not None and config.early_stopping_patience < 1:
-        raise ValueError("early_stopping_patience must be positive")
-    if not dataset:
-        raise ValueError("Training dataset is empty")
-    available_channels = _patch_arrays(dataset[0])[0].shape[0]
-    if config.input_channels is None:
-        config = replace(config, input_channels=available_channels)
-    if not 1 <= config.input_channels <= available_channels:
-        raise ValueError(f"input_channels={config.input_channels} invalid for dataset")
+def select_training_patches(dataset, config: TrainingConfig, manifest=None):
+    """Resolve the same patch groups for native and external trainers."""
     rng = np.random.RandomState(config.seed)
     holdouts = {}
     if config.split_strategy == "date_region":
@@ -826,6 +798,39 @@ def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: O
         val_patches = val_patches[:max(1, config.limit // 2)]
     if not train_patches or not val_patches:
         raise ValueError("Training and validation splits must be nonempty")
+    return {"treino": train_patches, "validacao": val_patches, **holdouts}
+
+
+def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: Optional[TrainingConfig] = None, manifest=None):
+    """Train a generic model from a list of prepared patches."""
+    if torch is None:
+        raise ModuleNotFoundError("PyTorch is required to run model training.")
+
+    config = config or TrainingConfig(model_name=model_name)
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
+    if config.selection_metric not in {"iou", "f2"}:
+        raise ValueError("selection_metric must be iou or f2")
+    if config.threshold_bins is not None and config.threshold_bins < 2:
+        raise ValueError("threshold_bins must be at least 2")
+    if config.epochs < 1:
+        raise ValueError("epochs must be positive")
+    if config.early_stopping_patience is not None and config.early_stopping_patience < 1:
+        raise ValueError("early_stopping_patience must be positive")
+    if not dataset:
+        raise ValueError("Training dataset is empty")
+    available_channels = _patch_arrays(dataset[0])[0].shape[0]
+    if config.input_channels is None:
+        config = replace(config, input_channels=available_channels)
+    if not 1 <= config.input_channels <= available_channels:
+        raise ValueError(f"input_channels={config.input_channels} invalid for dataset")
+    split_groups = select_training_patches(dataset, config, manifest)
+    train_patches = split_groups["treino"]
+    val_patches = split_groups["validacao"]
+    holdouts = {name: patches for name, patches in split_groups.items() if name.startswith("teste_")}
     print(f"Split: train={len(train_patches)} val={len(val_patches)} input_channels={config.input_channels}")
 
     from pipeline.models.factory import get_model
