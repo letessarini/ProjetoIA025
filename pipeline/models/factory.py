@@ -11,6 +11,8 @@ from pipeline.models.nnunet_adapter import build_nnunet_model
 
 MODEL_DEPENDENCIES = {
     "unet_resnet34": ("segmentation_models_pytorch", "segmentation-models-pytorch"),
+    "unetpp_resnet34": ("segmentation_models_pytorch", "segmentation-models-pytorch"),
+    "nnunet_2d": ("nnunetv2", "nnunetv2==2.6.4"),
 }
 
 
@@ -30,20 +32,29 @@ def load_model_dependency(model_name: str):
         raise RuntimeError(f"Unable to import {package} using {sys.executable}: {exc}") from exc
 
 
-def build_unet_resnet34(in_channels: int, encoder_weights: str | None = "imagenet"):
-    smp = load_model_dependency("unet_resnet34")
-
-    return smp.Unet(
+def build_resnet34_unet(in_channels: int, encoder_weights: str | None = "imagenet", *, nested: bool = False):
+    model_name = "unetpp_resnet34" if nested else "unet_resnet34"
+    smp = load_model_dependency(model_name)
+    architecture = smp.UnetPlusPlus if nested else smp.Unet
+    return architecture(
         encoder_name="resnet34",
+        encoder_depth=5,
         encoder_weights=encoder_weights,
+        decoder_channels=(256, 128, 64, 32, 16),
         in_channels=in_channels,
         classes=1,
         activation=None,
     )
 
+
+def build_unetpp_resnet34(in_channels: int, encoder_weights: str | None = "imagenet"):
+    return build_resnet34_unet(in_channels, encoder_weights, nested=True)
+
+
 MODEL_REGISTRY: dict[str, Callable[..., object]] = {
     "unet": build_unet,
-    "unet_resnet34": build_unet_resnet34,
+    "unet_resnet34": build_resnet34_unet,
+    "unetpp_resnet34": build_unetpp_resnet34,
     "unetpp": build_unetpp,
     "unet_pp": build_unetpp,
     "u_net_pp": build_unetpp,
@@ -59,6 +70,7 @@ MODEL_REGISTRY: dict[str, Callable[..., object]] = {
     "u-net-small": build_unet,
     "u_net_small": build_unet,
     "nnunet": build_nnunet_model,
+    "nnunet_2d": build_nnunet_model,
     "nn_unet": build_nnunet_model,
     "nn-u-net": build_nnunet_model,
     "nnu-net": build_nnunet_model,

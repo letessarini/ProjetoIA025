@@ -17,7 +17,7 @@ from pipeline.data_preparation.dataset_loader import find_dataset_dir, list_patc
 from pipeline.data_preparation.prepare_dataset import DEFAULT_PREPROCESS, prepare_dataset
 from pipeline.models.factory import MODEL_DEPENDENCIES, MODEL_REGISTRY, load_model_dependency, normalize_model_name
 from pipeline.models.trainer import TrainingConfig, run_training_model, torch
-from pipeline.models.nnunet_adapter import NnUNetAdapter
+from pipeline.models.nnunet_adapter import NnUNetAdapter, check_nnunet_benchmark_version, run_nnunet_benchmark
 
 
 def summarize_dataset(dataset_dir: Optional[Path | str] = None, limit: int = 3) -> Dict[str, Any]:
@@ -279,7 +279,10 @@ def run_pipeline(args: argparse.Namespace, config_data: Dict[str, Any], model_na
         save_validation_predictions=bool(config_data.get("save_validation_predictions", True)),
     )
 
-    result = run_training_model(model_name, prepared["patches"], config=config, manifest=prepared["manifest"])
+    if normalize_model_name(model_name) == "nnunet_2d":
+        result = run_nnunet_benchmark(prepared["patches"], config, prepared["manifest"], smoke=getattr(args, "smoke", False))
+    else:
+        result = run_training_model(model_name, prepared["patches"], config=config, manifest=prepared["manifest"])
     print(f"Training finished on device: {result['device']}")
     print(f"Run directory: {result['run_dir']}")
     print(f"Checkpoint saved to: {result['checkpoint']}")
@@ -294,9 +297,9 @@ def run_benchmark(args: argparse.Namespace, config_data: Dict[str, Any]) -> None
     canonical = [normalize_model_name(name) for name in models]
     if not models or len(canonical) != len(set(canonical)):
         raise SystemExit("Configure one or more distinct models for the benchmark.")
-    unsupported = [name for name in canonical if name not in MODEL_REGISTRY or name.startswith("nn")]
+    unsupported = [name for name in canonical if name not in MODEL_REGISTRY or (name.startswith("nn") and name != "nnunet_2d")]
     if unsupported:
-        raise SystemExit(f"Models must use the native pipeline trainer: {', '.join(unsupported)}")
+        raise SystemExit(f"Unsupported benchmark models: {', '.join(unsupported)}")
     if config_data.get("split_strategy") != "date_region":
         raise SystemExit("The benchmark requires date_region so all models share the same holdouts.")
     if torch is None:
@@ -308,6 +311,8 @@ def run_benchmark(args: argparse.Namespace, config_data: Dict[str, Any]) -> None
         if name in MODEL_DEPENDENCIES:
             try:
                 load_model_dependency(name)
+                if name == "nnunet_2d":
+                    check_nnunet_benchmark_version()
             except RuntimeError as exc:
                 raise SystemExit(str(exc)) from None
 
@@ -337,7 +342,9 @@ def run_benchmark(args: argparse.Namespace, config_data: Dict[str, Any]) -> None
             raise RuntimeError("Benchmark models used different split IDs.")
         metadata = result["metadata"]
         best_epoch = metadata["best_epoch"]
-        validation = result["history"][best_epoch - 1]["best_threshold"]
+        validation = metadata.get("validation")
+        if validation is None:
+            validation = result["history"][best_epoch - 1]["best_threshold"]
         for split_name, evaluation in {"validacao": validation, **metadata["holdouts"]}.items():
             rows.append({
                 "model": model_name, "seed": metadata["config"]["seed"], "split": split_name, "epoch": best_epoch,
