@@ -51,7 +51,12 @@ Use the modules under `pipeline/data_preparation/` as the first reusable block f
 
 From the repository root, run in a CUDA-enabled PyTorch environment with
 NumPy and `segmentation-models-pytorch` installed. The first ResNet-34 run
-downloads its ImageNet weights.
+downloads its ImageNet weights. Install the optional encoder package with
+the same Python interpreter that will run the benchmark.
+
+```bash
+python -m pip install segmentation-models-pytorch
+```
 
 ```bash
 python benchmark.py --smoke

@@ -1,13 +1,37 @@
 from __future__ import annotations
 
+import os
+import sys
+from importlib import import_module
 from typing import Callable
 
 from pipeline.models.unet_model import build_unet, build_unetpp
 from pipeline.models.nnunet_adapter import build_nnunet_model
 
 
+MODEL_DEPENDENCIES = {
+    "unet_resnet34": ("segmentation_models_pytorch", "segmentation-models-pytorch"),
+}
+
+
+def load_model_dependency(model_name: str):
+    module, package = MODEL_DEPENDENCIES[model_name]
+    try:
+        return import_module(module)
+    except ModuleNotFoundError as exc:
+        if exc.name != module:
+            raise RuntimeError(f"Unable to import dependencies for {model_name} using {sys.executable}: {exc}") from exc
+        command_prefix = "& " if os.name == "nt" else ""
+        raise RuntimeError(
+            f"{model_name} requires {package}. Install it with the Python running the pipeline:\n"
+            f'  {command_prefix}"{sys.executable}" -m pip install {package}'
+        ) from exc
+    except (ImportError, OSError, RuntimeError) as exc:
+        raise RuntimeError(f"Unable to import {package} using {sys.executable}: {exc}") from exc
+
+
 def build_unet_resnet34(in_channels: int, encoder_weights: str | None = "imagenet"):
-    import segmentation_models_pytorch as smp
+    smp = load_model_dependency("unet_resnet34")
 
     return smp.Unet(
         encoder_name="resnet34",

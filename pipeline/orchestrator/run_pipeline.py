@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from pipeline.data_preparation.dataset_loader import find_dataset_dir, list_patch_files, load_manifest, validate_patch_file
 from pipeline.data_preparation.prepare_dataset import DEFAULT_PREPROCESS, prepare_dataset
-from pipeline.models.factory import MODEL_REGISTRY, normalize_model_name
+from pipeline.models.factory import MODEL_DEPENDENCIES, MODEL_REGISTRY, load_model_dependency, normalize_model_name
 from pipeline.models.trainer import TrainingConfig, run_training_model, torch
 from pipeline.models.nnunet_adapter import NnUNetAdapter
 
@@ -308,6 +308,13 @@ def run_benchmark(args: argparse.Namespace, config_data: Dict[str, Any]) -> None
         raise SystemExit("Install PyTorch before running the benchmark.")
     if not args.smoke and not torch.cuda.is_available():
         raise SystemExit("CUDA is required for the full benchmark. Use --smoke to check the pipeline on CPU.")
+
+    for name in canonical:
+        if name in MODEL_DEPENDENCIES:
+            try:
+                load_model_dependency(name)
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from None
 
     if args.smoke:
         args.epochs = 1
