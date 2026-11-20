@@ -11,5 +11,7 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 
-# Generated GPU benchmark outputs
-/results/gpu_benchmark/
+# Generated experiment outputs
+/results/
+/resultados*/
+/evaluation_saved_predictions/

@@ -1,38 +1,21 @@
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from copy import deepcopy
 import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from pipeline.metrics.segmentation_metrics import compute_histogram_metrics, compute_metrics
+
 try:
     import torch
-    from torch import nn
 except Exception:  # pragma: no cover - optional dependency for import-time flexibility
     torch = None
-    nn = None
-
-
-def _no_grad_decorator():
-    if torch is None:
-        def identity(func):
-            return func
-        return identity
-    return torch.no_grad()
-
-
-# Use a safe decorator so module import does not crash when torch is unavailable.
-if torch is not None:
-    _no_grad = torch.no_grad()
-else:
-    def _no_grad(func):
-        return func
 
 
 @dataclass
@@ -158,22 +141,6 @@ def _patch_arrays(patch):
         with np.load(patch["path"], allow_pickle=False) as data:
             return _patch_arrays(data)
     return tuple(np.asarray(patch[name], dtype=np.float32) for name in ("X", "y", "valido"))
-
-
-def _prepare_batch(batch: Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]], device: Any):
-    xs, ys, valids = zip(*batch)
-    X = torch.stack([torch.from_numpy(np.asarray(x)) for x in xs]).to(device)
-    y = torch.stack([torch.from_numpy(np.asarray(v)) for v in ys]).to(device)
-    valid = torch.stack([torch.from_numpy(np.asarray(v)) for v in valids]).to(device)
-
-    if X.dim() == 3:
-        X = X.unsqueeze(1)
-    if y.dim() == 2:
-        y = y.unsqueeze(1)
-    if valid.dim() == 2:
-        valid = valid.unsqueeze(1)
-
-    return X, y, valid
 
 
 def build_loader(
@@ -450,10 +417,6 @@ def _ensure_segmentation_shape(tensor, batch_size: Optional[int] = None):
     if batch_size is not None and tensor.shape[0] != batch_size:
         tensor = tensor[:batch_size]
     return tensor
-
-
-from pipeline.metrics.segmentation_metrics import compute_histogram_metrics, compute_metrics
-
 
 
 def _threshold_metrics(tp, fp, fn, tn, eps: float = 1e-9) -> Dict[str, float]:
@@ -936,21 +899,3 @@ def run_training_model(model_name: str, dataset: List[Dict[str, Any]], config: O
         "predictions": prediction_summary,
         "metadata": metadata,
     }
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generic training entry point for the flood segmentation pipeline.")
-    parser.add_argument("--model", type=str, default="unet")
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    args = parser.parse_args()
-
-    cfg = TrainingConfig(
-        model_name=args.model,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.lr,
-    )
-    print(f"Training config: {cfg}")
-    print("This is a smoke-test training entry point; provide prepared patch data to run the full loop.")

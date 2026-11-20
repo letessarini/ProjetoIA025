@@ -20,13 +20,8 @@ from pipeline.models.trainer import TrainingConfig, run_training_model, torch
 from pipeline.models.nnunet_adapter import NnUNetAdapter
 
 
-def find_dataset_dir_local() -> Path:
-    """Compatibility wrapper for pipeline entry points."""
-    return find_dataset_dir()
-
-
 def summarize_dataset(dataset_dir: Optional[Path | str] = None, limit: int = 3) -> Dict[str, Any]:
-    dataset_dir = Path(dataset_dir) if dataset_dir is not None else find_dataset_dir_local()
+    dataset_dir = Path(dataset_dir) if dataset_dir is not None else find_dataset_dir()
     manifest = load_manifest(dataset_dir)
     patch_paths = list_patch_files(dataset_dir)
     samples = []
@@ -68,7 +63,7 @@ def parse_args(benchmark: bool = False) -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, help="Dataset directory with manifest.json and patches/")
     parser.add_argument("--output", type=Path, help="Override the results directory")
     parser.add_argument("--model", type=str, default=None, help="Model name: unet, u-net, nnunet, nnUNetTrainer")
-    parser.add_argument("--epochs", type=int, default=None, help="Training epochs for smoke-test mode")
+    parser.add_argument("--epochs", type=int, default=None, help="Override the configured epoch limit")
     parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
     parser.add_argument("--limit", type=int, default=None, help="Number of patches to prepare/train on; omit to use the full dataset")
     parser.add_argument("--train-patch-limit", type=int, default=None, help="Limit training patches after assigning the split")
@@ -204,7 +199,7 @@ def run_pipeline(args: argparse.Namespace, config_data: Dict[str, Any], model_na
     nnunet_config = args.nnunet_config if args.nnunet_config is not None else str(config_data.get("nnunet_config", "2d"))
     nnunet_fold = args.nnunet_fold if args.nnunet_fold is not None else int(config_data.get("nnunet_fold", 0))
 
-    dataset_dir = args.dataset if args.dataset is not None else find_dataset_dir_local()
+    dataset_dir = args.dataset if args.dataset is not None else find_dataset_dir()
     print(f"Repo root: {ROOT}")
     print(f"Dataset directory: {dataset_dir}")
     print(f"Using config: {args.config}")
